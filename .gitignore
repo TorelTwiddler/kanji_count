@@ -4,7 +4,7 @@
 
 # IntelliJ project files
 .idea
-*.iml
+db.sqlite3
 out
 gen### Python template
 # Byte-compiled / optimized / DLL files
