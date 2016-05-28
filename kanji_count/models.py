@@ -1,8 +1,6 @@
-from __future__ import unicode_literals
+from collections import Counter
 
-from collections import defaultdict, Counter
-
-from django.db import models
+from django.db import models, transaction
 
 import requests
 from bs4 import BeautifulSoup
@@ -14,6 +12,41 @@ FIRST_RARE_KANJI = '㐀'  # \u3400 - ord=13312
 LAST_RARE_KANJI = '䶵'  # \u4db5 - ord=19893
 
 
+class Kanji(models.Model):
+    """
+    Holds a single Kanji.
+
+    :cvar char: The character representation of the kanji (unicode).
+    :cvar ordinal: The ordinal representation of the kanji (ord(19968)).
+    """
+    char = models.CharField(max_length=1, unique=True, blank=False)
+    ordinal = models.SmallIntegerField(unique=True, blank=False)
+
+    def __str__(self):
+        return "{ord}: {char}".format(char=self.char, ord=self.ordinal)
+
+    @staticmethod
+    def generate() -> None:
+        """
+        Generates all of the kanji and adds them to the database.
+        """
+        for ordinal in range(ord(FIRST_COMMON_KANJI), ord(LAST_COMMON_KANJI)):
+            Kanji.objects.get_or_create(char=chr(ordinal), ordinal=ordinal)
+        for ordinal in range(ord(FIRST_RARE_KANJI), ord(LAST_RARE_KANJI)):
+            Kanji.objects.get_or_create(char=chr(ordinal), ordinal=ordinal)
+        print("Done Generating.")
+
+    @staticmethod
+    def is_kanji(character: str) -> bool:
+        """
+        Returns True if the character is a Kanji character, false otherwise.
+
+        :param character: a single character that may or may not be Kanji.
+        :return: True if it's kanji, False otherwise.
+        """
+        return Kanji.objects.filter(char=character).exists()
+
+
 class Article(models.Model):
     """
     An article that we will be reading the contents of to count the number
@@ -22,10 +55,16 @@ class Article(models.Model):
     :cvar str url: URL of the article
     :cvar str title: Title of the webpage at URL
     :cvar str content: The HTML Content of the webpage at URL.
+    :cvar int kanji_total: The total number of non-unique kanji that show up
+        on the page.
     """
     url = models.URLField(unique=True, blank=False)
     title = models.CharField(max_length=100)
     content = models.TextField()
+    kanji_total = models.IntegerField(default=0)
+
+    def __str__(self):
+        return self.title
 
     @classmethod
     def from_url(cls, url: str):
@@ -52,11 +91,16 @@ class Article(models.Model):
         Counts the Kanji for this webpage.
         """
         tagless_content = self.remove_tags(self.content)
-        counter = Counter((char for char in tagless_content if is_kanji(char)))
+        counter = Counter((char for char in tagless_content
+                           if Kanji.is_kanji(char)))
+
+        self.kanji_total = sum(counter.values())
+        self.save()
 
         for character, count in counter.items():
+            kanji = Kanji.objects.get(char=character)
             KanjiCount.objects.get_or_create(article=self,
-                                             kanji=character,
+                                             kanji=kanji,
                                              total=count)
 
     @staticmethod
@@ -80,6 +124,7 @@ class Article(models.Model):
         :return: the title found in that webpage
         """
         soup = BeautifulSoup(content, "html.parser")
+        # TODO: May not have a title
         return soup.title.string
 
     @staticmethod
@@ -98,8 +143,8 @@ class KanjiCount(models.Model):
     """
     The count of a single Kanji in an article.
     """
-    article = models.ForeignKey(Article)
-    kanji = models.CharField(max_length=1)
+    article = models.ForeignKey(Article, blank=False)
+    kanji = models.ForeignKey(Kanji, blank=False)
     total = models.PositiveIntegerField()
 
     def __str__(self):
@@ -107,16 +152,3 @@ class KanjiCount(models.Model):
 
     class Meta:
         unique_together = ('article', 'kanji')
-
-
-def is_kanji(character: str) -> bool:
-    """
-    Returns True if the character is a Kanji character, false otherwise.
-
-    :param character: a single character that may or may not be Kanji.
-    :return: True if it's kanji, False otherwise.
-    """
-    if ord(FIRST_COMMON_KANJI) <= ord(character) <= ord(LAST_COMMON_KANJI) \
-            or ord(FIRST_RARE_KANJI) <= ord(character) <= ord(LAST_RARE_KANJI):
-        return True
-    return False
